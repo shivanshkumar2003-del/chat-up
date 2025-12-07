@@ -1,0 +1,8 @@
+{
+  "name": "Mental Health Chat Up",
+  "description": "A mental health peer support platform connecting users for anonymous conversations with an earn-to-listen mechanic.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
