@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Watermark } from './components/Watermark';
 import { Onboarding } from './components/Onboarding';
@@ -10,8 +11,13 @@ import { ShieldAlert } from 'lucide-react';
 function App() {
   // Persistence: Try to load user from localStorage on boot
   const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
-    const saved = localStorage.getItem('mh_user_profile');
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = localStorage.getItem('mh_user_profile');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      console.warn("LocalStorage access denied");
+      return null;
+    }
   });
 
   const [appState, setAppState] = useState<AppState>(() => {
@@ -22,10 +28,14 @@ function App() {
 
   // Save profile whenever it changes
   useEffect(() => {
-    if (userProfile) {
-      localStorage.setItem('mh_user_profile', JSON.stringify(userProfile));
-    } else {
-      localStorage.removeItem('mh_user_profile');
+    try {
+      if (userProfile) {
+        localStorage.setItem('mh_user_profile', JSON.stringify(userProfile));
+      } else {
+        localStorage.removeItem('mh_user_profile');
+      }
+    } catch (e) {
+      // Ignore storage errors
     }
   }, [userProfile]);
 

@@ -2,14 +2,29 @@
 import { GoogleGenAI, Chat, GenerateContentResponse } from "@google/genai";
 import { UserProfile, UserRole } from "../types";
 
-// Initialize Gemini Client
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Helper to get the client safely
+const getAiClient = (): GoogleGenAI | null => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) {
+    console.warn("Gemini API Key is missing");
+    return null;
+  }
+  return new GoogleGenAI({ apiKey });
+};
 
 /**
  * Generates a sophisticated persona and system instruction.
  * Returns both the instruction string and a generated name for the peer.
  */
 export const createMatchPersona = async (userProfile: UserProfile): Promise<{systemInstruction: string, peerName: string}> => {
+  const ai = getAiClient();
+  if (!ai) {
+    return {
+        systemInstruction: "You are a kind listener.",
+        peerName: "System (No Key)"
+    };
+  }
+
   const model = "gemini-2.5-flash";
   
   // Logic to determine the complementary role
@@ -64,7 +79,10 @@ export const createMatchPersona = async (userProfile: UserProfile): Promise<{sys
 /**
  * Starts a chat session with the specific persona.
  */
-export const startChatSession = (systemInstruction: string): Chat => {
+export const startChatSession = (systemInstruction: string): Chat | null => {
+  const ai = getAiClient();
+  if (!ai) return null;
+
   return ai.chats.create({
     model: "gemini-2.5-flash",
     config: {
@@ -74,7 +92,9 @@ export const startChatSession = (systemInstruction: string): Chat => {
   });
 };
 
-export const sendMessageToGemini = async (chat: Chat, message: string): Promise<string> => {
+export const sendMessageToGemini = async (chat: Chat | null, message: string): Promise<string> => {
+  if (!chat) return "Connection error: API Key missing or service unavailable.";
+  
   try {
     const response: GenerateContentResponse = await chat.sendMessage({ message });
     return response.text || "";
