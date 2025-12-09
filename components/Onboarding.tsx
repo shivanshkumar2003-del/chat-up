@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+
+import React, { useState, useRef } from 'react';
 import { UserRole, UserProfile } from '../types';
-import { Heart, Ear, ArrowRight, User, MessageSquare, Tag, CheckCircle, Shield } from 'lucide-react';
+import { Heart, Ear, ArrowRight, User, MessageSquare, Tag, CheckCircle, Shield, Camera, Upload } from 'lucide-react';
 
 interface Props {
   onComplete: (profile: UserProfile) => void;
@@ -17,12 +18,30 @@ export const Onboarding: React.FC<Props> = ({ onComplete }) => {
   const [bio, setBio] = useState('');
   const [topics, setTopics] = useState<string[]>([]);
   const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [avatar, setAvatar] = useState<string>('');
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const toggleTopic = (t: string) => {
     if (topics.includes(t)) {
       setTopics(topics.filter(i => i !== t));
     } else {
       setTopics([...topics, t]);
+    }
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+        if (file.size > 1024 * 1024) { // 1MB limit
+            alert("Image too large. Please select an image under 1MB.");
+            return;
+        }
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            setAvatar(reader.result as string);
+        };
+        reader.readAsDataURL(file);
     }
   };
 
@@ -36,7 +55,8 @@ export const Onboarding: React.FC<Props> = ({ onComplete }) => {
           mood,
           bio,
           topics,
-          earnings: 0
+          earnings: 0,
+          avatar
         });
       }
     } else {
@@ -99,6 +119,32 @@ export const Onboarding: React.FC<Props> = ({ onComplete }) => {
                     <h2 className="text-2xl font-bold text-gray-800">Let's get to know you.</h2>
                     <p className="text-gray-500 text-sm">Your identity remains anonymous to other peers.</p>
                     
+                    <div className="flex justify-center mb-6">
+                        <div 
+                            onClick={() => fileInputRef.current?.click()}
+                            className="w-24 h-24 rounded-full bg-gray-100 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center cursor-pointer hover:bg-green-50 hover:border-green-300 transition-all overflow-hidden relative group"
+                        >
+                            {avatar ? (
+                                <img src={avatar} alt="Preview" className="w-full h-full object-cover" />
+                            ) : (
+                                <>
+                                    <Camera size={24} className="text-gray-400 mb-1" />
+                                    <span className="text-[10px] text-gray-400 font-bold uppercase">Upload</span>
+                                </>
+                            )}
+                            <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                <Upload size={20} className="text-white" />
+                            </div>
+                            <input 
+                                type="file" 
+                                ref={fileInputRef} 
+                                className="hidden" 
+                                accept="image/*"
+                                onChange={handleImageUpload}
+                            />
+                        </div>
+                    </div>
+
                     <div className="space-y-4">
                         <div>
                             <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Display Name</label>
@@ -156,7 +202,7 @@ export const Onboarding: React.FC<Props> = ({ onComplete }) => {
                             </div>
                             <div className="text-left">
                                 <span className="block font-bold text-gray-800">I want to listen</span>
-                                <span className="text-xs text-gray-500">Provide support to others and earn Karma coins.</span>
+                                <span className="text-xs text-gray-500">Provide support to others and earn Credits.</span>
                             </div>
                         </button>
                     </div>

@@ -1,20 +1,24 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
 
-# Run and deploy your AI Studio app
+# Mental Health Chat Up
 
-This contains everything you need to run your app locally.
+A peer-to-peer mental health support application powered by Gemini AI.
 
-View your app in AI Studio: https://ai.studio/apps/drive/1K_daxg5_yxnSvyYC061OjbdUOp5THiOC
+## How to Deploy (Free)
 
-## Run Locally
+This app cannot be hosted on Google Drive. Use Vercel:
 
-**Prerequisites:**  Node.js
+1. **Push to GitHub**:
+   - Upload all files to a GitHub repository.
 
+2. **Deploy on Vercel**:
+   - Go to [Vercel.com](https://vercel.com) and import your repository.
+   - **IMPORTANT**: In the "Environment Variables" section, add:
+     - Key: `API_KEY`
+     - Value: `[Your Google Gemini API Key]`
+   - Click **Deploy**.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Troubleshooting
+If you see a white screen:
+1. Check Vercel Logs.
+2. Ensure you added the `API_KEY` in Vercel Settings.
+3. Ensure `vite.config.ts` has `base: './'`.

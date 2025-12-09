@@ -31,9 +31,8 @@ export class ChatBackend {
     if (this.isDestroyed) return;
     this.callbacks.onStatusChange('SEARCHING');
     
-    // Simulate "Server" searching through a database of users
-    // We add a random delay to make it feel like a real network search
-    const matchDelay = Math.random() * 2000 + 1500; 
+    // Quick search simulation (faster now so users don't wait for "real" people)
+    const matchDelay = 1200; 
     
     setTimeout(async () => {
       if (this.isDestroyed) return;
@@ -67,7 +66,7 @@ export class ChatBackend {
                     timestamp: new Date()
                 });
              }
-        }, 1500);
+        }, 1000);
 
       } catch (e) {
         console.error("Match connection failed", e);

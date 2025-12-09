@@ -1,171 +1,271 @@
+
 import React, { useEffect, useRef, useState } from 'react';
-import { UserProfile, Message, UserRole } from '../types';
-import { ChatBackend, ConnectionStatus } from '../services/backend';
+import { UserProfile, Message } from '../types';
 import { ToastType } from './Toast';
-import { Send, Video, Mic, StopCircle, AlertCircle, Award, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { Send, Video, Mic, StopCircle, MicOff, VideoOff, Copy } from 'lucide-react';
+import { listenToRoomStatus, sendMessageToRoom, listenToMessages, leaveRoom, sendSignal, listenToSignals } from '../services/roomService';
 
 interface Props {
   user: UserProfile;
+  roomId: string;
+  isHost: boolean;
   onEndChat: (earned: boolean) => void;
   addToast: (msg: string, type: ToastType) => void;
 }
 
-export const ChatInterface: React.FC<Props> = ({ user, onEndChat, addToast }) => {
+const SERVERS = {
+    iceServers: [
+        {
+            urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302']
+        }
+    ]
+};
+
+export const ChatInterface: React.FC<Props> = ({ user, roomId, isHost, onEndChat, addToast }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   
-  // Connection State
-  const [status, setStatus] = useState<ConnectionStatus>('IDLE');
-  const [peerName, setPeerName] = useState('Anonymous');
-  const [isTyping, setIsTyping] = useState(false);
+  const [status, setStatus] = useState<'waiting' | 'connected' | 'ended'>('waiting');
+  const [peerName, setPeerName] = useState('Waiting...');
   
-  // Backend Reference
-  const backendRef = useRef<ChatBackend | null>(null);
-  
-  const userVideoRef = useRef<HTMLVideoElement>(null);
+  const [micOn, setMicOn] = useState(true);
+  const [camOn, setCamOn] = useState(true);
+  const [remoteStreamActive, setRemoteStreamActive] = useState(false);
+
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  
+  const peerConnection = useRef<RTCPeerConnection | null>(null);
+  const localStream = useRef<MediaStream | null>(null);
+  const candidateQueue = useRef<RTCIceCandidateInit[]>([]);
   const [timer, setTimer] = useState(0);
+
+  const myRole = isHost ? 'host' : 'guest';
 
   // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+  }, [messages]);
 
   // Timer
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
-    if (status === 'CONNECTED') {
+    if (status === 'connected') {
       interval = setInterval(() => setTimer(t => t + 1), 1000);
     }
     return () => clearInterval(interval);
   }, [status]);
 
-  // Initialize Media (Webcam)
+  // 1. Initialize Media & Firebase Status Listeners
   useEffect(() => {
-    const startVideo = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        if (userVideoRef.current) {
-          userVideoRef.current.srcObject = stream;
+    const init = async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localStream.current = stream;
+            
+            if (localVideoRef.current) {
+                localVideoRef.current.srcObject = stream;
+                // Important: Mute local video to prevent feedback/echo
+                localVideoRef.current.muted = true;
+            }
+        } catch (err) {
+            console.error(err);
+            addToast("Camera/Mic access denied. Video will not work.", "error");
         }
-      } catch (err) {
-        console.error("Camera access denied:", err);
-        addToast("Camera access is required for video matching.", "error");
-      }
     };
-    startVideo();
+    
+    init();
+
+    // Listen to Status
+    const unsubscribeStatus = listenToRoomStatus(roomId, (newStatus: any, peer: any) => {
+        if (newStatus === 'ended') {
+            addToast("Chat ended by peer.", 'info');
+            handleCleanup();
+            onEndChat(false);
+            return;
+        }
+        
+        setStatus(newStatus);
+        
+        if (newStatus === 'connected') {
+             if (peer && peer.name !== user.name) {
+                 setPeerName(peer.name);
+             } else {
+                 setPeerName(isHost ? "Guest" : "Host");
+             }
+        }
+    });
+
+    // Listen to Messages
+    const unsubscribeMessages = listenToMessages(roomId, (msgs) => {
+        setMessages(msgs);
+    });
 
     return () => {
-        if (userVideoRef.current && userVideoRef.current.srcObject) {
-            const stream = userVideoRef.current.srcObject as MediaStream;
-            stream.getTracks().forEach(track => track.stop());
-        }
+        unsubscribeStatus();
+        unsubscribeMessages();
+        handleCleanup();
     };
-  }, [addToast]);
+  }, []);
 
-  // Initialize Backend Connection
+  // 2. WebRTC Logic - Triggers when Connected
   useEffect(() => {
-    const startBackend = () => {
-        // Instantiate the "Backend" service
-        backendRef.current = new ChatBackend(user, {
-            onStatusChange: (newStatus) => {
-              setStatus(newStatus);
-              if (newStatus === 'CONNECTED') {
-                addToast("Encrypted connection established.", "success");
-              } else if (newStatus === 'DISCONNECTED') {
-                addToast("Connection lost. Trying to reconnect...", "error");
+    if (status === 'connected' && localStream.current) {
+        setupWebRTC();
+    }
+  }, [status, localStream.current]); // Added dependency to ensure stream exists
+
+  const processCandidateQueue = async () => {
+      const pc = peerConnection.current;
+      if (!pc || !pc.remoteDescription) return;
+      
+      while (candidateQueue.current.length > 0) {
+          const candidate = candidateQueue.current.shift();
+          if (candidate) {
+              try {
+                  await pc.addIceCandidate(candidate);
+                  console.log("Buffered candidate added");
+              } catch (e) {
+                  console.error("Error adding buffered candidate", e);
               }
-            },
-            onMessage: (msg) => setMessages(prev => [...prev, msg]),
-            onPeerTyping: (typing) => setIsTyping(typing),
-            onPeerFound: (name) => setPeerName(name)
-        });
+          }
+      }
+  };
 
-        backendRef.current.startSearch();
+  const setupWebRTC = async () => {
+    if (peerConnection.current) return; // Already setup
+
+    console.log("Setting up WebRTC connection...");
+    const pc = new RTCPeerConnection(SERVERS);
+    peerConnection.current = pc;
+
+    // Add local tracks to PC
+    localStream.current?.getTracks().forEach(track => {
+        pc.addTrack(track, localStream.current!);
+    });
+
+    // Handle Remote Stream
+    pc.ontrack = (event) => {
+        console.log("Remote track received", event.streams);
+        if (event.streams && event.streams[0]) {
+             if (remoteVideoRef.current) {
+                remoteVideoRef.current.srcObject = event.streams[0];
+                setRemoteStreamActive(true);
+            }
+        }
     };
 
-    startBackend();
-
-    return () => {
-        backendRef.current?.disconnect();
+    // Handle ICE Candidates
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            sendSignal(roomId, 'candidate', JSON.stringify(event.candidate), myRole);
+        }
     };
-  }, [user, addToast]);
+
+    // Listen for Signals
+    listenToSignals(roomId, myRole, 
+        async (offerStr) => {
+             // Got Offer (Guest only)
+             if (!pc.currentRemoteDescription) {
+                 console.log("Received Offer");
+                 const offer = JSON.parse(offerStr);
+                 await pc.setRemoteDescription(offer);
+                 
+                 // Process any candidates waiting for this description
+                 await processCandidateQueue();
+
+                 const answer = await pc.createAnswer();
+                 await pc.setLocalDescription(answer);
+                 sendSignal(roomId, 'answer', JSON.stringify(answer), myRole);
+             }
+        },
+        async (answerStr) => {
+             // Got Answer (Host only)
+             if (!pc.currentRemoteDescription) {
+                 console.log("Received Answer");
+                 const answer = JSON.parse(answerStr);
+                 await pc.setRemoteDescription(answer);
+                 
+                 // Process any candidates waiting for this description
+                 await processCandidateQueue();
+             }
+        },
+        async (candidateStr) => {
+             // Got Candidate
+             try {
+                const candidate = JSON.parse(candidateStr);
+                if (pc.remoteDescription) {
+                    await pc.addIceCandidate(candidate);
+                } else {
+                    console.log("Buffering candidate (no remote description yet)");
+                    candidateQueue.current.push(candidate);
+                }
+             } catch (e) { console.error("Error adding candidate", e); }
+        }
+    );
+
+    // If Host, Create Offer
+    if (isHost) {
+        console.log("Creating Offer...");
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendSignal(roomId, 'offer', JSON.stringify(offer), myRole);
+    }
+  };
+
+  const handleCleanup = () => {
+      localStream.current?.getTracks().forEach(t => t.stop());
+      if (peerConnection.current) {
+          peerConnection.current.close();
+          peerConnection.current = null;
+      }
+  };
 
   const handleSend = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!inputText.trim() || status !== 'CONNECTED') return;
+    if (!inputText.trim()) return;
 
-    const userMsg: Message = {
+    const msg: Message = {
       id: Date.now().toString(),
-      sender: 'user',
+      sender: user.name as any, 
       text: inputText,
       timestamp: new Date()
     };
-
-    setMessages(prev => [...prev, userMsg]);
-    setInputText('');
     
-    // Send to backend
-    backendRef.current?.sendMessage(userMsg.text);
+    sendMessageToRoom(roomId, msg);
+    setInputText('');
   };
 
-  const handleSkip = () => {
-    // If listener, no coins if skipped early (e.g., < 30 seconds)
-    const earned = user.role === UserRole.LISTENER && timer > 30;
-    if (user.role === UserRole.LISTENER && !earned) {
-      addToast("Session too short to earn coins.", "info");
-    }
-    onEndChat(earned);
+  const handleEnd = () => {
+    leaveRoom(roomId);
+    handleCleanup();
+    onEndChat(false);
   };
 
-  const handleReport = () => {
-    addToast("User reported. Our safety team will review the logs.", "error");
-    // In a real app, this would send a flag to the server
+  const copyCode = () => {
+    navigator.clipboard.writeText(roomId);
+    addToast("Room code copied!", 'success');
   };
+
+  const toggleMic = () => {
+      if (localStream.current) {
+          localStream.current.getAudioTracks().forEach(t => t.enabled = !micOn);
+          setMicOn(!micOn);
+      }
+  }
+
+  const toggleCam = () => {
+      if (localStream.current) {
+          localStream.current.getVideoTracks().forEach(t => t.enabled = !camOn);
+          setCamOn(!camOn);
+      }
+  }
 
   const formatTime = (s: number) => {
     const mins = Math.floor(s / 60);
     const secs = s % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  // Helper to render the overlay content based on connection status
-  const renderVideoOverlay = () => {
-    switch (status) {
-        case 'SEARCHING':
-            return (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/10 backdrop-blur-sm z-10 transition-all">
-                    <div className="bg-white/90 p-6 rounded-2xl shadow-xl border border-white/20 flex flex-col items-center animate-in fade-in zoom-in duration-300">
-                        <RefreshCw className="w-10 h-10 text-green-500 animate-spin mb-3" />
-                        <h3 className="font-bold text-gray-800 text-lg">Finding a Match...</h3>
-                        <p className="text-gray-500 text-sm">Searching for similar peers</p>
-                    </div>
-                </div>
-            );
-        case 'MATCHED':
-            return (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-green-500/20 backdrop-blur-sm z-10">
-                     <div className="bg-white/95 p-8 rounded-2xl shadow-2xl flex flex-col items-center animate-bounce-in">
-                        <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center text-green-600 mb-4">
-                            <Wifi size={32} />
-                        </div>
-                        <h3 className="font-black text-2xl text-gray-800">Match Found!</h3>
-                        <p className="text-green-600 font-bold text-lg mt-1">Connecting to {peerName}...</p>
-                    </div>
-                </div>
-            );
-        case 'DISCONNECTED':
-            return (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/80 z-10">
-                    <div className="text-center text-white">
-                         <WifiOff size={48} className="mx-auto mb-4 opacity-50" />
-                         <p>Connection Lost</p>
-                    </div>
-                </div>
-            );
-        default:
-            return null;
-    }
   };
 
   return (
@@ -176,33 +276,46 @@ export const ChatInterface: React.FC<Props> = ({ user, onEndChat, addToast }) =>
         
         {/* Header Bar */}
         <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-gray-200">
-             <div className="flex items-center gap-2">
-                 {status === 'CONNECTED' && <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />}
-                 <span className="font-mono text-gray-600 font-bold">{formatTime(timer)}</span>
-                 <span className="text-gray-300 mx-2">|</span>
-                 <span className="text-gray-500 text-sm font-bold tracking-wide">MENTAL HEALTH CHAT UP</span>
-             </div>
-             <div className="flex gap-2">
-                 <div className="bg-gray-100 text-gray-600 px-3 py-1 rounded-full text-xs font-bold border border-gray-200">
-                    Role: {user.role === UserRole.SPEAKER ? 'Speaker' : 'Listener'}
+             <div className="flex items-center gap-4">
+                 <div className="bg-gray-900 text-white px-4 py-2 rounded-lg font-mono text-xl tracking-widest font-bold flex items-center gap-2">
+                    {roomId}
+                    <button onClick={copyCode} className="text-gray-400 hover:text-white"><Copy size={14}/></button>
                  </div>
+                 <div className="h-6 w-px bg-gray-200"></div>
+                 <div className="flex items-center gap-2">
+                    {status === 'connected' && <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />}
+                    <span className="font-mono text-gray-600 font-bold">{formatTime(timer)}</span>
+                 </div>
+             </div>
+             
+             <div className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold">
+                {status === 'waiting' ? 'WAITING FOR FRIEND...' : 'LIVE CONNECTION'}
              </div>
         </div>
 
         <div className="flex-1 flex flex-col md:flex-row gap-4 min-h-0">
             {/* Peer Video */}
             <div className="flex-1 relative bg-gray-100 rounded-2xl shadow-inner border border-gray-200 overflow-hidden group">
-                 {renderVideoOverlay()}
+                 {status === 'waiting' && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/10 backdrop-blur-sm z-10">
+                        <div className="bg-white/90 p-6 rounded-2xl shadow-xl border border-white/20 flex flex-col items-center animate-pulse">
+                            <h3 className="font-bold text-gray-800 text-lg">Waiting for Peer...</h3>
+                            <p className="text-gray-500 text-sm">Share code: <span className="font-mono font-bold">{roomId}</span></p>
+                        </div>
+                    </div>
+                 )}
                  
-                 <div className="relative w-full h-full bg-gray-800">
-                     {/* Static Peer Image / Avatar */}
-                     <img 
-                        src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${peerName}&backgroundColor=c0ebcf`}
-                        className="w-full h-full object-cover opacity-90 transition-opacity duration-500" 
-                        alt="Peer" 
-                     />
+                 <div className="relative w-full h-full bg-gray-800 flex items-center justify-center">
+                     {!remoteStreamActive && status === 'connected' && (
+                         <div className="absolute z-10 text-white/50 text-center">
+                            <div className="animate-spin w-8 h-8 border-4 border-green-500 border-t-transparent rounded-full mx-auto mb-2"></div>
+                            Connecting Video...
+                         </div>
+                     )}
+                     <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                     
                      <div className="absolute bottom-4 left-4 bg-white/90 backdrop-blur-md px-4 py-1.5 rounded-full text-gray-800 text-sm font-bold shadow-lg flex items-center gap-2">
-                        <span className={`w-2 h-2 rounded-full ${status === 'CONNECTED' ? 'bg-green-500' : 'bg-yellow-400'}`}></span>
+                        <span className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-green-500' : 'bg-yellow-400'}`}></span>
                         {peerName}
                      </div>
                  </div>
@@ -211,13 +324,12 @@ export const ChatInterface: React.FC<Props> = ({ user, onEndChat, addToast }) =>
             {/* User Video */}
             <div className="flex-1 relative bg-gray-100 rounded-2xl shadow-inner border border-gray-200 overflow-hidden">
                  <div className="relative w-full h-full bg-gray-900">
-                     <video 
-                        ref={userVideoRef} 
-                        autoPlay 
-                        muted 
-                        playsInline 
-                        className="w-full h-full object-cover transform scale-x-[-1]" 
-                     />
+                     {!camOn && (
+                         <div className="absolute inset-0 flex items-center justify-center text-white/30">
+                             <VideoOff size={48} />
+                         </div>
+                     )}
+                     <video ref={localVideoRef} autoPlay muted playsInline className={`w-full h-full object-cover transform scale-x-[-1] ${!camOn ? 'hidden' : ''}`} />
                       <div className="absolute bottom-4 left-4 bg-white/90 backdrop-blur-md px-4 py-1.5 rounded-full text-gray-800 text-sm font-bold shadow-lg">
                         You
                      </div>
@@ -228,13 +340,17 @@ export const ChatInterface: React.FC<Props> = ({ user, onEndChat, addToast }) =>
         {/* Controls */}
         <div className="h-24 bg-white rounded-2xl shadow-sm border border-gray-200 flex items-center justify-between px-8">
             <div className="flex gap-4">
-                <button className="p-4 rounded-full bg-gray-50 hover:bg-gray-100 text-gray-600 transition shadow-sm border border-gray-100"><Mic size={24} /></button>
-                <button className="p-4 rounded-full bg-gray-50 hover:bg-gray-100 text-gray-600 transition shadow-sm border border-gray-100"><Video size={24} /></button>
+                <button onClick={toggleMic} className={`p-4 rounded-full transition shadow-sm border ${micOn ? 'bg-gray-50 text-gray-700 border-gray-200' : 'bg-red-50 text-red-500 border-red-200'}`}>
+                    {micOn ? <Mic size={24} /> : <MicOff size={24} />}
+                </button>
+                <button onClick={toggleCam} className={`p-4 rounded-full transition shadow-sm border ${camOn ? 'bg-gray-50 text-gray-700 border-gray-200' : 'bg-red-50 text-red-500 border-red-200'}`}>
+                     {camOn ? <Video size={24} /> : <VideoOff size={24} />}
+                </button>
             </div>
             
             <div className="flex gap-4">
                 <button 
-                    onClick={handleSkip}
+                    onClick={handleEnd}
                     className="px-8 py-4 rounded-xl bg-red-500 hover:bg-red-600 text-white font-bold flex items-center gap-2 shadow-lg hover:shadow-red-500/30 transition transform hover:scale-105 active:scale-95"
                 >
                     <StopCircle size={24} className="fill-current" /> END CALL
@@ -245,62 +361,24 @@ export const ChatInterface: React.FC<Props> = ({ user, onEndChat, addToast }) =>
 
       {/* Right: Chat Column */}
       <div className="w-full md:w-1/3 bg-white flex flex-col h-full border-l border-green-100 shadow-xl z-30">
-          
-          <div className="p-4 border-b border-gray-100 bg-white flex items-center justify-between shadow-sm z-10">
-              <div>
-                  <h3 className="font-black text-gray-800 text-lg">Live Chat</h3>
-                  {status === 'CONNECTED' ? (
-                     <p className="text-xs text-green-600 flex items-center gap-1 font-bold mt-0.5">
-                        <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> 
-                        Encrypted Connection
-                     </p>
-                  ) : (
-                     <p className="text-xs text-yellow-500 flex items-center gap-1 font-bold mt-0.5">
-                        <span className="w-2 h-2 bg-yellow-400 rounded-full"></span> 
-                        {status === 'SEARCHING' ? 'Searching...' : 'Offline'}
-                     </p>
-                  )}
-              </div>
-              {user.role === UserRole.LISTENER && (
-                  <div className="flex items-center gap-1 text-yellow-700 bg-yellow-50 px-3 py-1 rounded-full text-xs font-bold border border-yellow-200 shadow-sm">
-                      <Award size={14} /> +Coins Active
-                  </div>
-              )}
+          <div className="p-4 border-b border-gray-100 bg-white shadow-sm z-10">
+              <h3 className="font-black text-gray-800 text-lg">Realtime Chat</h3>
+              <p className="text-xs text-green-600 font-bold">Encrypted via Firebase</p>
           </div>
 
           {/* Messages Area */}
           <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-white scrollbar-hide">
-              {status !== 'CONNECTED' && messages.length === 0 && (
-                  <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-4 opacity-50">
-                      <p className="text-sm font-medium">Waiting to connect...</p>
-                  </div>
-              )}
-              {messages.map((msg) => (
-                  <div 
-                    key={msg.id} 
-                    className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-2 duration-300`}
-                  >
-                      <div className={`
-                        max-w-[85%] px-5 py-3 rounded-2xl text-sm leading-relaxed shadow-sm font-medium
-                        ${msg.sender === 'user' 
-                            ? 'bg-green-500 text-white rounded-br-none' 
-                            : msg.sender === 'system'
-                                ? 'bg-red-50 text-red-500 w-full text-center'
-                                : 'bg-gray-100 text-gray-800 rounded-bl-none'}
-                      `}>
-                          {msg.text}
+              {messages.map((msg: any) => {
+                  const isMe = msg.sender === user.name;
+                  return (
+                      <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-2 duration-300`}>
+                          <div className={`max-w-[85%] px-5 py-3 rounded-2xl text-sm leading-relaxed shadow-sm font-medium ${isMe ? 'bg-green-500 text-white rounded-br-none' : 'bg-gray-100 text-gray-800 rounded-bl-none'}`}>
+                              <span className="block text-[10px] opacity-70 mb-1 font-bold uppercase">{isMe ? 'You' : msg.sender}</span>
+                              {msg.text}
+                          </div>
                       </div>
-                  </div>
-              ))}
-              {isTyping && (
-                  <div className="flex justify-start animate-pulse">
-                      <div className="bg-gray-50 px-4 py-3 rounded-2xl rounded-bl-none flex gap-1 border border-gray-100">
-                          <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce"></span>
-                          <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce delay-75"></span>
-                          <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce delay-150"></span>
-                      </div>
-                  </div>
-              )}
+                  )
+              })}
               <div ref={messagesEndRef} />
           </div>
 
@@ -311,26 +389,12 @@ export const ChatInterface: React.FC<Props> = ({ user, onEndChat, addToast }) =>
                     type="text"
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
-                    placeholder={status === 'CONNECTED' ? "Type a message..." : "Connecting..."}
-                    disabled={status !== 'CONNECTED'}
-                    className="w-full bg-gray-50 border-gray-200 border rounded-xl pl-4 pr-12 py-4 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:bg-white transition-all disabled:opacity-50 disabled:bg-gray-100 font-medium text-gray-700 placeholder-gray-400"
+                    placeholder="Type a message..."
+                    className="w-full bg-gray-50 border-gray-200 border rounded-xl pl-4 pr-12 py-4 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 transition-all font-medium text-gray-700"
                   />
-                  <button 
-                    type="submit" 
-                    disabled={status !== 'CONNECTED' || !inputText.trim()}
-                    className="absolute right-2 p-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:bg-gray-200 disabled:text-gray-400 transition-colors shadow-sm"
-                  >
+                  <button type="submit" className="absolute right-2 p-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors shadow-sm">
                       <Send size={18} />
                   </button>
-              </div>
-              <div className="text-center mt-3">
-                 <button 
-                    type="button" 
-                    onClick={handleReport}
-                    className="text-[10px] uppercase font-bold text-gray-300 hover:text-red-500 flex items-center justify-center gap-1 mx-auto transition-colors"
-                 >
-                    <AlertCircle size={10} /> Report User
-                 </button>
               </div>
           </form>
       </div>
