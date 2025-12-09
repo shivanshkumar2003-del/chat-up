@@ -1,4 +1,3 @@
-
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -9,8 +8,8 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    // This is critical for preventing white screens on some hosts
-    base: './', 
+    // Standard base path for Vercel
+    base: '/', 
     define: {
       // This ensures your code using `process.env.API_KEY` works in the browser
       'process.env.API_KEY': JSON.stringify(env.API_KEY || '')
