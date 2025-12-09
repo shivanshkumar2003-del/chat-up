@@ -8,8 +8,8 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    // Standard base path for Vercel
-    base: '/', 
+    // Use relative paths to match "homepage": "." in package.json
+    base: './', 
     define: {
       // This ensures your code using `process.env.API_KEY` works in the browser
       'process.env.API_KEY': JSON.stringify(env.API_KEY || '')
