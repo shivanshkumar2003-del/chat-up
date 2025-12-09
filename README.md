@@ -1,24 +1,38 @@
 
 # Mental Health Chat Up
 
-A peer-to-peer mental health support application powered by Gemini AI.
+A peer-to-peer mental health support application supporting both AI Peers (Gemini) and Real Human Connection (Firebase).
 
-## How to Deploy (Free)
+## Quick Deployment (Netlify Drag & Drop)
 
-This app cannot be hosted on Google Drive. Use Vercel:
+1. **Generate the App Folder**:
+   Open your terminal in this project folder and run:
+   ```bash
+   npm run build
+   ```
+   
+2. **Locate the Folder**:
+   After the command finishes, look in your project folder. You will see a **new folder named `dist`** created.
+   *(This folder contains your finished website).*
 
-1. **Push to GitHub**:
-   - Upload all files to a GitHub repository.
+3. **Upload**:
+   - Go to [app.netlify.com/drop](https://app.netlify.com/drop).
+   - Drag that **`dist`** folder onto the page.
+   - Your site is now live!
 
-2. **Deploy on Vercel**:
-   - Go to [Vercel.com](https://vercel.com) and import your repository.
-   - **IMPORTANT**: In the "Environment Variables" section, add:
-     - Key: `API_KEY`
-     - Value: `[Your Google Gemini API Key]`
-   - Click **Deploy**.
+## Development Setup
 
-## Troubleshooting
-If you see a white screen:
-1. Check Vercel Logs.
-2. Ensure you added the `API_KEY` in Vercel Settings.
-3. Ensure `vite.config.ts` has `base: './'`.
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+2. Start local server:
+   ```bash
+   npm run dev
+   ```
+
+## Configuration
+
+- **Firebase**: configured in `services/firebaseConfig.ts`.
+- **AI (Gemini)**: Add your API key to a `.env` file as `VITE_API_KEY=...` before building if you want to use the AI features.
